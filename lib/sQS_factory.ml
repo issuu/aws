@@ -137,20 +137,12 @@ let signed_request
 
     | _ -> raise (Error "ReceiveMessageResponse")
 
-  let send_message_response_of_xml = function
-    | X.E ("SendMessageResponse",
-           _,
-           [
-             X.E("SendMessageResult",_ ,
-                 [
-                   X.E ("MD5OfMessageBody", _, _) ;
-                   X.E ("MessageId", _, [ X.P message_id ])
-                 ]) ;
-             _ ;
-           ]) -> message_id
-
-    | _ -> raise (Error "SendMessageResponse")
-
+  let send_message_response_of_xml xml =
+    match X.find_node ["SendMessageResponse"; "SendMessageResult"; "MessageId"] [xml] with
+    | Some [] -> raise (Error "SendMessageResponse: Empty node")
+    | Some [X.P message_id] -> message_id
+    | Some _  -> raise (Error "SendMessageResponse: Inconsistent structure")
+    | None -> raise (Error "SendMessageResponse: Path not found")
 
 (* create queue *)
   let create_queue ?(default_visibility_timeout=30) creds queue_name =
