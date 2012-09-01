@@ -22,10 +22,16 @@ let string_of_xml x =
   Buffer.contents buf
 
 (* select node *)
-let rec find_node path tree =
-  match (path, tree) with
-  | [], tree -> Some tree
-  | _, [] -> None
-  | elem :: path, E (name, _, tree) :: _ when elem = name ->
-    find_node path tree
-  | path, _ :: tree -> find_node path tree
+let rec find_node tree path =
+  match (tree, path) with
+  | tree, [] -> Some tree
+  | [], _ -> None
+  | E (name, _, tree) :: _, elem :: path when elem = name ->
+    find_node tree path
+  | _ :: tree, path -> find_node tree path
+
+let find_property tree path =
+  match find_node tree path with
+  | Some [P property] -> Some property
+  | _ -> None
+

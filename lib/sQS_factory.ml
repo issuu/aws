@@ -81,64 +81,54 @@ let signed_request
         `Error message
       | _ -> `Error "unknown message"
 
-
-
 (* xml handling utilities *)
-  let queue_url_of_xml = function
-    | X.E ("QueueUrl",_ , [ X.P url ]) -> url
+  let queue_url_of_xml xml = 
+    match X.find_property [xml] ["QueueUrl"] with 
+    | Some url -> url;
+    | _ -> 
+      let xml = X.string_of_xml xml in         
+      raise (Error ("QueueUrlResponse: " ^ xml))
+
+  let list_queues_response_of_xml xml =
+    match X.find_node [xml] ["ListQueuesResponse"; "ListQueuesResult"] with
+    | Some items -> List.map queue_url_of_xml items
     | _ ->
-      raise (Error ("QueueUrlResponse"))
-
-  let list_queues_response_of_xml = function
-    | X.E("ListQueuesResponse", _, [
-      X.E("ListQueuesResult",_,items) ;
-      _ ;
-    ]) ->
-      List.map queue_url_of_xml items
+      let xml = X.string_of_xml xml in    
+      raise (Error ("ListQueuesRequestsResponse: " ^ xml))
+        
+  let create_queue_response_of_xml xml =
+    match X.find_property [xml] ["CreateQueueResponse"; "QueueUrl"] with
+    | Some url -> url
+    | _ -> 
+      let xml = X.string_of_xml xml in    
+      raise (Error ("CreateQueueResponse:" ^ xml))
+        
+  type message = { message_id : string ;
+                   receipt_handle : string ;
+                   body : string 
+                 }
+      
+  let message_of_xml encoded xml =
+    let message_id = X.find_property [xml] ["Message"; "MessageId"] in
+    let receipt_handle = X.find_property [xml] ["Message"; "ReceiptHandle"] in
+    let body = X.find_property [xml] ["Message"; "Body"] in
+    
+    match message_id, receipt_handle, body with
+    | Some message_id, Some receipt_handle, Some body -> 
+      { message_id ; receipt_handle ; body = (if encoded then Util.base64_decoder body else body) }
     | _ ->
-      raise (Error "ListQueuesRequestsResponse")
+      let xml = X.string_of_xml xml in
+      raise (Error ("ReceiveMessageResult.message: " ^ xml))
 
-  let create_queue_response_of_xml = function
-    | X.E("CreateQueueResponse", _, kids) -> (
-      match kids with
-        | [_ ; X.E ("QueueUrl",_, [ X.P url ])] -> (
-          url
-        )
-        | _ -> raise (Error "CreateQueueResponse.queueurl")
-    )
-    | _ -> raise (Error "CreateQueueResponse")
-
-  type message =
-      {
-        message_id : string ;
-        receipt_handle : string ;
-        body : string }
-
-  let message_of_xml encoded = function
-    | X.E ("Message",
-           _,
-           X.E ("MessageId", _, [ X.P message_id ])
-           :: X.E ("ReceiptHandle", _, [ X.P receipt_handle ])
-           :: X.E ("MD5OfBody", _ , _)
-           :: X.E ("Body", _, [ X.P body ]) :: attributes
-    ) -> { message_id ; receipt_handle ; body = (if encoded then Util.base64_decoder body else body) }
-
-    | xml ->
-      let msg = X.string_of_xml xml in
-      raise (Error ("ReceiveMessageResult.message: " ^ msg))
-
-  let receive_message_response_of_xml ~encoded = function
-    | X.E ("ReceiveMessageResponse",
-           _,
-           [
-             X.E("ReceiveMessageResult",_ , items) ;
-             _ ;
-           ]) -> List.map (message_of_xml encoded) items
-
-    | _ -> raise (Error "ReceiveMessageResponse")
+  let receive_message_response_of_xml ~encoded xml =
+    match X.find_node [xml] ["ReceiveMessageResponse"; "ReceiveMessageResult"] with
+    | Some items -> List.map (message_of_xml encoded) items 
+    | _ ->
+      let xml = X.string_of_xml xml in
+      raise (Error ("ReceiveMessageResponse: " ^ xml))
 
   let send_message_response_of_xml xml =
-    match X.find_node ["SendMessageResponse"; "SendMessageResult"; "MessageId"] [xml] with
+    match X.find_node [xml] ["SendMessageResponse"; "SendMessageResult"; "MessageId"] with
     | Some [] -> raise (Error "SendMessageResponse: Empty node")
     | Some [X.P message_id] -> message_id
     | Some _  -> raise (Error "SendMessageResponse: Inconsistent structure")
