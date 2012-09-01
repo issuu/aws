@@ -598,10 +598,10 @@ let list_bucket_result_of_xml xml =
       method is_truncated = is_truncated
       method objects = contents
      end)
+            
   with
   | Not_found -> 
     let str = X.string_of_xml xml in
-    Printf.printf "Parse Error: %s%!" str;
     raise (Error "ListBucketResult")
 
 
@@ -620,8 +620,9 @@ let list_objects ?(prefix="") ?(marker="") creds region bucket =
   let request_url = (service_url_of_region region) ^ (Util.encode_url bucket) ^ "?" ^ (Netencoding.Url.mk_url_encoded_parameters get_params) in
 
   try_lwt
-    lwt response_headers, response_body = HC.get ~headers request_url in
-    return (`Ok (list_bucket_result_of_xml (X.xml_of_string response_body)))
+    lwt response_headers, response_body = HC.get ~headers request_url in 
+    let xml = X.xml_of_string response_body in
+    return (`Ok (list_bucket_result_of_xml xml))
   with 
     | HC.Http_error (404, _, _   ) -> return `NotFound
     | HC.Http_error (301, _, body) -> permanent_redirect_of_string body
