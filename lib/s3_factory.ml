@@ -256,38 +256,15 @@ let auth_hdr
   let signature = sign creds.Creds.aws_secret_access_key string_to_sign in
   "Authorization", sprintf "AWS %s:%s" creds.Creds.aws_access_key_id signature
 
-let find_element kids key = 
-  try
-    Some (
-      List.find (
-        fun kid -> 
-          match kid with
-            | X.E ( k, _, _ ) when k = key -> true
-            | _ -> false
-      ) kids
-    )
-  with Not_found ->
-    None
+let some = function 
+  | Some x -> x
+  | None -> raise Not_found
 
 let error_msg body =
-  
-  (* <Error><Code>SomeMessage</Code>...</Error> *)
-  try
-    match X.xml_of_string body with
-      | X.E ("Error",_, kids ) -> (
-        match find_element kids "Code" with 
-          | Some (X.E( "Code", _, [X.P msg] )) -> return (`Error msg)
-          | _ -> fail (Error body)
-      )
-
-      | _ -> 
-        (* complain if can't interpret the xml, and then just use the
-         entire body as the payload for the exception *)
-        fail (Error body)
-
-  with Xmlm.Error (_,err) ->
-    fail (Error body)
-    
+  let xml = X.xml_of_string body in
+  match X.find_property [xml] "Error/Code" with
+  | Some msg -> return (`Error msg)
+  | None -> fail (Error body)
 
 let s3_region_regexp = Pcre.regexp "s3(-(.*))?"
 
@@ -314,33 +291,14 @@ let region_of_endpoint s =
    <bucket>.s3.amazonaws.com, which does not reveal the correct region
    of the bucket. *)
 let permanent_redirect_of_string body = 
-  (* <Endpoint>mybucket.us-west-1.s3.amazonaws.com</Endpoint>, or
-     <Endpoint>mybucket.s3.amazonaws.com</Endpoint>
-  *)
-  try
-    match X.xml_of_string body with
-      | X.E ("Error",_, kids ) -> (
-
-        match 
-          find_element kids "Code", 
-          find_element kids "Endpoint" 
-        with
-          | Some (X.E( "Code", _, [X.P "PermanentRedirect"] )),
-            Some (X.E( "Endpoint", _, [X.P endpoint] )) ->
-            return (`PermanentRedirect (region_of_endpoint endpoint))
-
-          | Some (X.E( "Code", _, [X.P msg] )), _ -> return (`Error msg)
-          | _ -> fail (Error body)
-
-      )
-
-      | _ -> 
-        (* complain if can't interpret the xml, and then just use the
-         entire body as the payload for the exception *)
-        fail (Error body)
-
-  with Xmlm.Error (_,err) ->
-    fail (Error body)
+  let xml = X.xml_of_string body in
+  let code = X.find_property [xml] "Error/Code" in
+  let endpoint = X.find_property [xml] "Error/Endpoint" in
+  match code, endpoint with
+  | Some "PermanentRedirect", Some endpoint -> 
+    return (`PermanentRedirect (region_of_endpoint endpoint))
+  | Some msg, _ -> return (`Error msg) 
+  | _, _ -> fail (Error body)
 
 let get_object_h creds_opt region ~bucket ~objekt  =
   let date = now_as_string () in
@@ -464,19 +422,16 @@ let delete_bucket creds region bucket =
     | HC.Http_error (_  , _, body) -> error_msg body 
 
 (* list buckets *)
-let rec bucket = function
-  | X.E (
-    "Bucket",_, [
-      X.E ("Name",_,        [X.P name           ]) ;  
-      X.E ("CreationDate",_,[X.P creation_date_s]) 
-    ] )->
-    (object
-      method name = name
-      method creation_date = creation_date_s
-     end)
-  | _ -> raise (Error "ListAllMyBucketsResult:2")
+let rec bucket xml = 
+  let bucket_data = some (X.find_node [xml] "Bucket") in
+  let name = some (X.find_property bucket_data "Name") in
+  let creation_date = some (X.find_property bucket_data "CreationDate") in
+  (object
+    method name = name
+    method creation_date = creation_date
+   end)
 
-and list_all_my_buckets_result_of_xml = function 
+let list_all_my_buckets_result_of_xml = function 
   | X.E ("ListAllMyBucketsResult",_, [_ ; X.E ("Buckets",_,buckets) ] ) ->
     List.map bucket buckets
   | _ -> raise (Error "ListAllMyBucketsResult:1")
@@ -488,9 +443,10 @@ let list_buckets creds region =
   let request_url = service_url_of_region region in
   try_lwt
     lwt headers, body = HC.get ~headers request_url in
-    try
-      let buckets = list_all_my_buckets_result_of_xml (X.xml_of_string body) in
-      return (`Ok buckets)
+    try      
+      let xml = X.xml_of_string body in
+      let buckets_nodes = some (X.find_node [xml] "ListAllMyBucketsResult/Buckets") in
+      return (`Ok (List.map bucket buckets_nodes))
     with (Error _) as exn ->
       fail exn
   with 
@@ -592,71 +548,62 @@ let get_object_metadata creds region ~bucket ~objekt =
     | HC.Http_error (_  ,_, body) -> error_msg body
 
   
-(* list objects *)
-let option_pcdata err = function
-  | [X.P x] -> Some x
-  | [] -> None
-  | _ -> raise (Error err)
+let objects_of_xml xml = 
+  let content = some (X.find_node [xml] "Contents") in   
+  
+  let name = some (X.find_property content "Key") in
+  let last_modified = some (X.find_property content "LastModified") in
+  let etag = some (X.find_property content "ETag") in
+  let size = some (X.find_property content "Size") in
+  let storage_class = some (X.find_property content "StorageClass") in
+  let owner_id = match X.find_property content "Owner/ID" with Some s -> s | None -> "invalid" in
+  let owner_display_name = 
+    match X.find_property content "Owner/DisplayName" with 
+    | Some s -> s 
+    | None -> "invalid"
+  in
+  
+  let last_modified = Util.unixfloat_of_amz_date_string last_modified in
+  let size = int_of_string size in
+  (object 
+    method name = name
+    method last_modified = last_modified
+    method etag = etag
+    method size = size
+    method storage_class = storage_class 
+    method owner_id = owner_id
+    method owner_display_name = owner_display_name
+   end)
+    
 
-let rec list_bucket_result_of_xml = function
-  | X.E ("ListBucketResult",_,kids) -> (
-    match kids with 
-      | X.E ("Name",_,[X.P name]) ::
-          X.E ("Prefix",_,prefix_opt) ::
-          X.E ("Marker",_,marker_opt) ::
-          X.E ("MaxKeys",_,[X.P max_keys]) ::
-          X.E ("IsTruncated",_,[X.P is_truncated]) ::
-          contents ->
-
-        let prefix_opt = option_pcdata "ListBucketResult:prefix" prefix_opt in
-        let marker_opt = option_pcdata "ListBucketResult:marker" marker_opt in
-        let max_keys = int_of_string max_keys in
-        let is_truncated = bool_of_string is_truncated in
-        let contents = contents_of_xml contents in
-
-        (object 
-          method name = name
-          method prefix = prefix_opt
-          method marker = marker_opt
-          method max_keys = max_keys
-          method is_truncated = is_truncated
-          method objects = contents
-         end)
-      | _ ->
-        raise (Error "ListBucketResult:k")
-  )
-  | _ ->
-    raise (Error "ListBucketResult:t")
-
-and contents_of_xml contents =
-  List.map objects_of_xml contents
-
-and objects_of_xml = function
-  | X.E ("Contents",_, [
-    X.E ("Key",_,[X.P name]);
-    X.E ("LastModified",_,[X.P last_modified_s]);
-    X.E ("ETag",_,[X.P etag]);
-    X.E ("Size",_,[X.P size]);
-(*    X.E ("Owner",_,[
-      X.E ("ID",_,[X.P owner_id]);
-      X.E ("DisplayName",_,[X.P owner_display_name])
-    ]); *)
-    X.E ("StorageClass",_,[X.P storage_class])
-  ]) ->
-    let last_modified = Util.unixfloat_of_amz_date_string last_modified_s in
-    let size = int_of_string size in
-    let owner_id = "invalid" and owner_display_name = "invalid" in 
+let list_bucket_result_of_xml xml =
+  try
+    let result = some (X.find_node [xml] "ListBucketResult") in
+    let xml_contents, metadata = List.partition (function X.E(n, _, _) when n = "Contents" -> true | _ -> false) result in
+    let name = some (X.find_property metadata "Name") in
+    let prefix_opt = X.find_property metadata "Prefix" in 
+    let marker_opt = X.find_property metadata "Marker" in 
+    let max_keys = some (X.find_property metadata "MaxKeys") in 
+    let is_truncated = some (X.find_property metadata "IsTruncated") in
+    let contents = List.map objects_of_xml xml_contents in
+    
+    let max_keys = int_of_string max_keys in
+    let is_truncated = bool_of_string is_truncated in
+    
     (object 
       method name = name
-      method last_modified = last_modified
-      method etag = etag
-      method size = size
-      method storage_class = storage_class 
-      method owner_id = owner_id
-      method owner_display_name = owner_display_name
+      method prefix = prefix_opt
+      method marker = marker_opt
+      method max_keys = max_keys
+      method is_truncated = is_truncated
+      method objects = contents
      end)
-  | _ -> raise (Error "ListBucketResult:c")
-    
+  with
+  | Not_found -> 
+    let str = X.string_of_xml xml in
+    Printf.printf "Parse Error: %s%!" str;
+    raise (Error "ListBucketResult")
+
 
 let list_objects ?(prefix="") ?(marker="") creds region bucket =
   let date = now_as_string () in

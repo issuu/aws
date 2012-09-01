@@ -72,32 +72,31 @@ let signed_request
   (http_host ^ http_uri), params
 
 
-  let error_msg body =
-    match X.xml_of_string body with
-      | X.E ("Response",_,(X.E ("Errors",_,[X.E ("Error",_,[
-        X.E ("Code",_,[X.P code]);
-        X.E ("Message",_,[X.P message])
-      ])]))::_) ->
-        `Error message
-      | _ -> `Error "unknown message"
+  let error_msg body = 
+    let xml = X.xml_of_string body in    
+    let code = X.find_property [xml] "Response/Errors/Error/Code" in
+    let message = X.find_property [xml] "Response/Errors/Error/Message" in
+    match code, message with
+    | Some code, Some message -> `Error (code ^ ": " ^ message)
+    | _ -> `Error "unknown message"
 
 (* xml handling utilities *)
   let queue_url_of_xml xml = 
-    match X.find_property [xml] ["QueueUrl"] with 
+    match X.find_property [xml] "QueueUrl" with 
     | Some url -> url;
     | _ -> 
       let xml = X.string_of_xml xml in         
       raise (Error ("QueueUrlResponse: " ^ xml))
 
   let list_queues_response_of_xml xml =
-    match X.find_node [xml] ["ListQueuesResponse"; "ListQueuesResult"] with
+    match X.find_node [xml] "ListQueuesResponse/ListQueuesResult" with
     | Some items -> List.map queue_url_of_xml items
     | _ ->
       let xml = X.string_of_xml xml in    
       raise (Error ("ListQueuesRequestsResponse: " ^ xml))
         
   let create_queue_response_of_xml xml =
-    match X.find_property [xml] ["CreateQueueResponse"; "QueueUrl"] with
+    match X.find_property [xml] "CreateQueueResponse/QueueUrl" with
     | Some url -> url
     | _ -> 
       let xml = X.string_of_xml xml in    
@@ -109,9 +108,9 @@ let signed_request
                  }
       
   let message_of_xml encoded xml =
-    let message_id = X.find_property [xml] ["Message"; "MessageId"] in
-    let receipt_handle = X.find_property [xml] ["Message"; "ReceiptHandle"] in
-    let body = X.find_property [xml] ["Message"; "Body"] in
+    let message_id = X.find_property [xml] "Message/MessageId" in
+    let receipt_handle = X.find_property [xml] "Message/ReceiptHandle" in
+    let body = X.find_property [xml] "Message/Body" in
     
     match message_id, receipt_handle, body with
     | Some message_id, Some receipt_handle, Some body -> 
@@ -121,14 +120,14 @@ let signed_request
       raise (Error ("ReceiveMessageResult.message: " ^ xml))
 
   let receive_message_response_of_xml ~encoded xml =
-    match X.find_node [xml] ["ReceiveMessageResponse"; "ReceiveMessageResult"] with
+    match X.find_node [xml] "ReceiveMessageResponse/ReceiveMessageResult" with
     | Some items -> List.map (message_of_xml encoded) items 
     | _ ->
       let xml = X.string_of_xml xml in
       raise (Error ("ReceiveMessageResponse: " ^ xml))
 
   let send_message_response_of_xml xml =
-    match X.find_node [xml] ["SendMessageResponse"; "SendMessageResult"; "MessageId"] with
+    match X.find_node [xml] "SendMessageResponse/SendMessageResult/MessageId" with
     | Some [] -> raise (Error "SendMessageResponse: Empty node")
     | Some [X.P message_id] -> message_id
     | Some _  -> raise (Error "SendMessageResponse: Inconsistent structure")
