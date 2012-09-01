@@ -602,7 +602,7 @@ let list_bucket_result_of_xml xml =
   with
   | Not_found -> 
     let str = X.string_of_xml xml in
-    raise (Error "ListBucketResult")
+    raise (Error ("ListBucketResult: " ^ str))
 
 
 let list_objects ?(prefix="") ?(marker="") creds region bucket =
