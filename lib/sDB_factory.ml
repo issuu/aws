@@ -69,86 +69,56 @@ struct
     let params = ("Signature", signature) :: params in
     (http_host ^ http_uri), params
       
-
   (* XML readers *)  
       
   let error_msg code' body =
-    match X.xml_of_string body with
-      | X.E ("Response",_,
-             (X.E ("Errors",_,
-                   [
-                     X.E ("Error",_,[
-                       X.E ("Code",_,[X.P code]);
-                       X.E ("Message",_,[X.P message]); 
-                       _ 
-                     ])]))::_) -> `Error (code, message)
-      | _ -> `Error ("unknown", body)
+    let xml = X.xml_of_string body in
+    let code = X.find_property [xml] "Response/Errors/Error/Code" in
+    let message = X.find_property [xml] "Response/Errors/Error/Message" in
+    match code, message with
+    | Some code, Some message -> `Error (code, message)
+    | _ -> `Error ("unknown", body)
 
 
-  let domain_of_xml = function 
-    | X.E ("DomainName", _, [ X.P domain_name ]) -> domain_name 
-    | _ -> raise (Error "ListDomainsResult.domain")
+  let domain_of_xml xml = 
+    match X.find_property [xml] "DomainName" with
+    | Some domain_name -> domain_name
+    | None -> raise (Error "ListDomainsResult.domain")
 
-  let list_domains_response_of_xml = function 
-    | X.E ("ListDomainsResponse", _, 
-           [ 
-             X.E ("ListDomainsResult", _, domains); 
-             _ ]) -> List.map domain_of_xml domains
-    | _ -> raise (Error "ListDomainsResult")
+  let list_domains_response_of_xml xml =
+    match X.find_node [xml] "ListDomainsResponse/ListDomainsResult" with
+    | Some domains -> List.map domain_of_xml domains
+    | None -> raise (Error "ListDomainsResult")
     
-  let attributes_of_xml encoded = function 
-    | X.E ("Attribute", _, 
-           [
-             X.E ("Name", _, [ X.P name ]); 
-             X.E ("Value", _, [ X.P value ]); 
-           ]) -> ((if encoded then Util.base64_decoder name else name),  
-                  (if encoded then Some (Util.base64_decoder value) else Some value))
+  let attributes_of_xml encoded xml = 
+    let name = match X.find_property [xml] "Attribute/Name", encoded with
+      | Some name, true -> Util.base64_decoder name
+      | Some name, false -> name
+      | None, _ -> raise (Error "Attribute 1")
+    in
 
-    | X.E ("Attribute", _, 
-           [
-             X.E ("Name", _, [ X.P name ]); 
-             X.E ("Value", _, [ ]); 
-           ]) -> ((if encoded then Util.base64_decoder name else name), None)
-
-    | _ -> raise (Error "Attribute 1")
-
-  let get_attributes_response_of_xml encoded = function 
-    | X.E ("GetAttributesResponse", _, 
-           [ 
-             X.E ("GetAttributesResult", _, attributes); 
-             _; 
-           ]) -> List.map (attributes_of_xml encoded) attributes
-    | _ -> raise (Error "GetAttributesResponse") 
-
-
-  let attrs_of_xml encoded = function 
-    | X.E ("Attribute", _ , children) -> 
-      ( match children with 
-        | [
-          X.E ("Name", _, [ X.P name ]) ;
-          X.E ("Value", _, [ X.P value ]) ;
-        ] ->  (if encoded then Util.base64_decoder name else name), (Some  (if encoded then Util.base64_decoder value else value))
-        | [
-          X.E ("Name", _, [ X.P name ]) ;
-          X.E ("Value", _, [ ]) ;
-        ] -> (if encoded then Util.base64_decoder name else name), None  
-        | l -> failwith (Printf.sprintf "fat list %d" (List.length l)) 
- )    
-    | _ -> raise (Error "Attribute 3")
+    let value = match X.find_property [xml] "Attribute/Value", encoded with
+      | Some value, true -> Some (Util.base64_decoder value)
+      | v, _ -> v
+    in
+    
+    (name, value)
+        
+  let get_attributes_response_of_xml encoded xml =
+    match X.find_node [xml] "GetAttributesResponse/GetAttributesResult" with
+    | Some attributes -> List.map (attributes_of_xml encoded) attributes
+    | None -> raise (Error "GetAttributesResponse") 
 
   let rec item_of_xml encoded acc token = function 
     | [] -> (acc, token)
-    | X.E ("Item", _, (X.E ("Name", _, [ X.P name ]) :: attrs)) :: nxt -> item_of_xml encoded (((if encoded then Util.base64_decoder name else name), (List.map (attrs_of_xml encoded) attrs)) :: acc) token nxt
+    | X.E ("Item", _, (X.E ("Name", _, [ X.P name ]) :: attrs)) :: nxt -> item_of_xml encoded (((if encoded then Util.base64_decoder name else name), (List.map (attributes_of_xml encoded) attrs)) :: acc) token nxt
     | X.E ("NextToken", _, [ X.P next_token ]) :: _ -> acc, (Some next_token) 
     | _ -> raise (Error "Item")
       
-  let select_of_xml encoded = function 
-    | X.E ("SelectResponse", _,
-           [
-             X.E ("SelectResult", _, items); 
-             _ ;
-           ]) -> item_of_xml encoded [] None items
-    | _ -> raise (Error "SelectResponse")
+  let select_of_xml encoded xml =
+    match X.find_node [xml] "SelectResponse/SelectResult" with
+    | Some items -> item_of_xml encoded [] None items
+    | None -> raise (Error "SelectResponse")
 
 (* list all domains *)
 
