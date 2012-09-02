@@ -17,50 +17,7 @@ module Util = Aws_util
 exception Error of string
 
 let sprint = Printf.sprintf
-
-(* convenience functions for navigating xml nodes *)
-let find_kids e_list k =
-  try
-    let el = List.find (function
-      | X.E( name, _, kids ) -> name = k
-      | X.P _ -> false
-    ) e_list in
-    let kids = 
-      match el with
-        | X.E( name, _, kids ) -> kids
-        | X.P _ -> assert false
-    in
-    Some kids
-  with Not_found -> 
-    None
-
-let find_kids_else_error e_list k =
-  match find_kids e_list k with 
-    | None -> raise (Error k)
-    | Some kids -> kids
-
-let find_p_kid e_list k =
-  match find_kids e_list k with
-    | None -> None
-    | Some [X.P p_kid] -> Some p_kid
-    | _ -> None
-
-let find_e_kid e_list k =
-  match find_kids e_list k with
-    | None -> None
-    | Some [e] -> Some e
-    | _ -> None
-
-let find_p_kid_else_error e_list k =
-  match find_p_kid e_list k with
-    | None -> raise (Error k)
-    | Some p -> p
-
-let find_e_kid_else_error e_list k =
-  match find_e_kid e_list k with
-    | None -> raise (Error k)
-    | Some e -> e
-
+let get = function Some x -> x | None -> raise Not_found
 
 (* compute the AWS SHA1 signature that to annotate a Query-style request *)
 let signed_request
@@ -113,22 +70,17 @@ let signed_request
 
 
 (* describe regions *)
-let item_of_xml = function
-  | X.E("item",_,[
-    X.E("regionName",_,[X.P name]);
-    X.E("regionEndpoint",_,[X.P endpoint])
-  ]) -> name, endpoint
+let item_of_xml xml = 
+  let name = X.find_property [xml] "item/regionName" in
+  let endpoint = X.find_property [xml] "item/regionEndpoint" in
+  match name, endpoint with
+  | Some name, Some endpoint -> (name, endpoint)
   | _ -> raise (Error "DescribeRegionsResponse.RegionInfo.item")
 
-let describe_regions_response_of_xml = function
-  | X.E("DescribeRegionsResponse", _, kids) -> (
-    match kids with
-      | [_ ; X.E ("regionInfo",_,items_x)] -> (
-        List.map item_of_xml items_x
-      )
-      | _ -> raise (Error "DescribeRegionsResponse.regionInfo")
-  )
-  | _ -> raise (Error "DescribeRegionsResponse")
+let describe_regions_response_of_xml xml =
+  match X.find_node [xml] "DescribeRegionsResponse/regionInfo" with
+  | Some items -> List.map item_of_xml items
+  | None -> raise (Error "DescribeRegionsResponse")
 
 let describe_regions ?expires_minutes creds =
   let request = signed_request creds ?expires_minutes
@@ -138,14 +90,12 @@ let describe_regions ?expires_minutes creds =
   return (describe_regions_response_of_xml xml)
 
 (* describe spot price history *)
-let item_of_xml = function 
-  | X.E ("item",_,[
-    X.E ("instanceType",_,[X.P instance_type]);
-    X.E ("productDescription",_,[X.P product_description]);
-    X.E ("spotPrice",_,[X.P spot_price_s]);
-    X.E ("timestamp",_,[X.P timestamp_s])
-  ]) ->
-
+let item_of_xml xml =
+  try
+    let instance_type = get (X.find_property [xml] "item/instanceType") in
+    let product_description = get (X.find_property [xml] "item/productDescription") in
+    let spot_price_s = get (X.find_property [xml] "item/spotPrice") in
+    let timestamp_s = get (X.find_property [xml] "item/timestamp") in
     let spot_price = float_of_string spot_price_s in
     let timestamp = Util.unixfloat_of_amz_date_string timestamp_s in
     (object 
@@ -154,28 +104,18 @@ let item_of_xml = function
       method spot_price = spot_price 
       method timestamp = timestamp
      end)
-
-  | _ -> raise (Error (String.concat "." [
+  with
+  | Not_found -> raise (Error (String.concat "." [
     "DescribeSpotPriceHistoryResponse";
     "spotPriceHistorySet";
     "item"
   ]))
       
 
-let describe_spot_price_history_of_xml = function
-  | X.E ("DescribeSpotPriceHistoryResponse",_,kids) -> (
-    match kids with
-      | [_ ; X.E("spotPriceHistorySet",_,kids) ] ->
-        List.map item_of_xml kids
-
-      | _ ->
-        raise (
-          Error ("DescribeSpotPriceHistoryResponse." ^ 
-            "spotPriceHistorySet")
-        )
-  )
-  | _ ->
-    raise (Error "DescribeSpotPriceHistoryResponse")
+let describe_spot_price_history_of_xml xml = 
+  match X.find_node [xml] "DescribeSpotPriceHistoryResponse/spotPriceHistorySet" with
+  | Some items -> List.map item_of_xml items 
+  | None -> raise ( Error "DescribeSpotPriceHistoryResponse")
 
 let filters_args kv_list =
   let _, f = List.fold_left (
@@ -277,49 +217,42 @@ let string_of_instance_state = function
   | `problematic   -> "problematic"
 
 
-let state_of_xml = function
-  | [ X.E ("code",_,[X.P code_s]);
-      X.E ("name",_,[X.P name])
-    ] ->
+let state_of_xml xml =
+  try
+    let code_s = get (X.find_property [xml] "code") in
+    (* let name = get (X.get_property [xml] "name") in *)
     instance_state_of_code (int_of_string code_s) 
-  | _ ->
-    raise (Error "state")
+  with
+  | Not_found -> raise (Error "state")
 
-let item_of_xml = function
-  | X.E ("item",_, [
-    X.E ("instanceId",_,[X.P instance_id]);
-    X.E ("currentState",_,c_state_x);
-    X.E ("previousState",_,p_state_x)
-  ]) -> 
-    let current_state = state_of_xml c_state_x in
-    let previous_state = state_of_xml p_state_x in
+let item_of_xml xml = 
+  try
+    let instance_id = get (X.find_property [xml] "item/instanceId") in
+    let c_state_x = get (X.find_property [xml] "item/currentState/item/code") in
+    let p_state_x = get (X.find_property [xml] "item/previousState/item/code") in
+    
+    let current_state = instance_state_of_code (int_of_string c_state_x) in
+    let previous_state = instance_state_of_code (int_of_string p_state_x) in
     (object 
       method instance_id = instance_id
       method current_state = current_state
       method previous_state = previous_state
      end)
     
-  | _ ->
+  with Not_found ->
     raise (Error "TerminateInstancesResponse.instancesSet.item")
       
 
-let terminate_instances_of_xml = function
-  | X.E ("TerminateInstancesResponse",_, [
-    _request_id_x;
-    X.E ("instancesSet",_, items)
-  ]) ->
-    List.map item_of_xml items
-  | _ -> raise (Error "TerminateInstancesResponse")
+let terminate_instances_of_xml xml =
+  match X.find_node [xml] "TerminateInstancesResponse/instancesSet" with
+  | Some items -> List.map item_of_xml items
+  | None -> raise (Error "TerminateInstancesResponse")
 
 let error_msg body =
-  match X.xml_of_string body with
-    | X.E ("Response",_,(X.E ("Errors",_,[X.E ("Error",_,[
-      X.E ("Code",_,[X.P code]);
-      X.E ("Message",_,[X.P message])
-    ])]))::_) ->
-      `Error message
-  
-  | _ -> raise (Error "Response.Errors.Error")
+  let xml = X.xml_of_string body in
+  match X.find_property [xml] "Response/Errors/Error/Message" with
+  | Some message -> `Error message
+  | None -> raise (Error "Response.Errors.Error")
 
 let instance_id_args instance_ids =
   Util.list_map_i (
@@ -386,19 +319,20 @@ let group_of_xml = function
     ))
            
 let placement_of_xml kids = 
-  let availability_zone_opt = find_p_kid kids "availabilityZone" in
-  let group_name_opt = find_p_kid kids "groupName" in
+  let availability_zone_opt = X.find_property kids "availabilityZone" in
+  let group_name_opt = X.find_property kids "groupName" in
   availability_zone_opt, group_name_opt
 
-let instance_of_xml = function 
-  | X.E("item",_,kids) ->
-    
-    let fp = find_p_kid_else_error kids in
-    let fpo = find_p_kid kids in
+let instance_of_xml xml =
+  try
+    let kids = get (X.find_node [xml] "item") in
+
+    let fp = fun x -> match X.find_property kids x with Some x -> x | None -> raise (Error x) in
+    let fpo = X.find_property kids in
 
     let id = fp "instanceId" in
     let image_id = fp "imageId" in
-    let state_x = find_kids_else_error kids "instanceState" in
+    let state_x = List.hd (get (X.find_node kids "instanceState")) in
     let private_dns_name_opt = fpo "privateDnsName" in
     let dns_name_opt = fpo "dnsName" in
     let key_name_opt = fpo "keyName" in
@@ -409,23 +343,18 @@ let instance_of_xml = function
         | None -> raise (Error "instance_type")
     in
     let launch_time_s = fp "launchTime" in
-    let placement_x = find_kids_else_error kids "placement" in
+    let placement_x = get (X.find_node kids "placement") in
     let kernel_id_opt = fpo "kernelId" in
     let virtualization_type_opt = fpo "virtualizationType" in
     let private_ip_address_opt = fpo "privateIpAddress" in
     let ip_address_opt = fpo "ipAddress" in
     let architecture_opt = fpo "architecture" in
     let root_device_type = fp "rootDeviceType" in
-    let root_device_name_opt = find_p_kid kids "rootDeviceName" in
+    let root_device_name_opt = X.find_node kids "rootDeviceName" in
     let reason_opt = fpo "reason" in
     let ramdisk_id_opt = fpo "ramdiskId" in
     let lifecycle_opt = fpo "instanceLifecycle" in
-    let monitoring = 
-      match find_kids kids "monitoring" with
-        | Some [X.E ("state",_,[X.P monitoring_state])] -> monitoring_state
-        | _ -> raise (Error "monitoring")
-    in
-
+    let monitoring = get (X.find_property kids "monitoring/state") in
     (* TODO: 
        product_code
        block_device_mapping
@@ -465,40 +394,38 @@ let instance_of_xml = function
       method virtualization_type_opt = virtualization_type_opt
       method monitoring = monitoring
      end)
-  | _ ->
+  with Not_found ->
     raise (Error "DescribeInstancesResponse.reservationSet.item.instancesSet")
 
 let reservation_of_xml kids = 
-  let fp = find_p_kid_else_error kids in
-  let fe = find_kids_else_error kids in
-  let reservation_id = fp "reservationId" in
-  let owner_id = fp "ownerId" in
-  let groups_x = fe "groupSet" in
-  let instances_x = fe "instancesSet" in
-  let groups = List.map group_of_xml groups_x in
-  let instances = List.map instance_of_xml instances_x in
-  (object
-    method id = reservation_id
-    method owner_id = owner_id
-    method groups = groups 
-    method instances = instances
-   end)
+  try
+    let fp = fun x -> match X.find_property kids x with Some x -> x | None -> raise (Error x) in
+    let fe = fun x -> match X.find_node kids x with Some x -> x | None -> raise (Error x) in
+    let reservation_id = fp "reservationId" in
+    let owner_id = fp "ownerId" in
+    let groups_x = fe "groupSet" in
+    let instances_x = fe "instancesSet" in
+    let groups = List.map group_of_xml groups_x in
+    let instances = List.map instance_of_xml instances_x in
+    (object
+      method id = reservation_id
+      method owner_id = owner_id
+      method groups = groups 
+      method instances = instances
+     end)
+  with
+  | Not_found -> raise (Error "Reservation")
 
 
-let reservation_item_of_xml = function
-  | X.E("item",_,reservation_x) -> reservation_of_xml reservation_x
-  | _ -> raise (Error "DescribeInstancesResponse.reservationSet.item")
+let reservation_item_of_xml xml =
+  match X.find_node [xml] "item" with
+  | Some reservation_x -> reservation_of_xml reservation_x
+  | None -> raise (Error "DescribeInstancesResponse.reservationSet.item")
 
-let describe_instances_of_xml = function
-  | X.E("DescribeInstancesResponse",_,kids) -> (
-    match kids with
-      | [_; X.E("reservationSet",_,reservation_items)] ->
-        List.map reservation_item_of_xml reservation_items
-      | _ ->
-        raise (Error "DescribeInstancesResponse.reservationSet")
-  )
-  | _ ->
-    raise (Error "DescribeInstancesResponse")
+let describe_instances_of_xml xml =
+  match X.find_node [xml] "DescribeInstancesResponse/reservationSet" with
+  | Some items -> List.map reservation_item_of_xml items
+  | None -> raise (Error "DescribeInstancesResponse")
     
 let describe_instances ?expires_minutes ?region creds instance_ids =
   let args = instance_id_args instance_ids in
@@ -514,10 +441,10 @@ let describe_instances ?expires_minutes ?region creds instance_ids =
       return (error_msg body)
 
 (* run instances *)
-let run_instances_of_xml = function
-  | X.E("RunInstancesResponse",_, reservation_x) -> 
-    reservation_of_xml reservation_x
-  | _ ->
+let run_instances_of_xml xml = 
+  match X.find_node [xml] "RunInstancesResponse" with
+  | Some reservation_x -> reservation_of_xml reservation_x
+  | None -> 
     raise (Error "RunInstancesResponse")
 
 let augment_opt f x = function
@@ -668,51 +595,52 @@ type spot_instance_request_description = <
   groups : string list;
   placement_group_opt : string option
 >
-
-let spot_instance_request_of_xml = function
-  | X.E("item",_,kids) ->
-      let fp = find_p_kid_else_error kids in
-      let fpo = find_p_kid kids in
-      let sir_id = fp "spotInstanceRequestId" in
-      let spot_price = float_of_string (fp "spotPrice") in
-      let state = spot_instance_request_state_of_string (fp "state") in
-      let sir_type = spot_instance_request_type_of_string (fp "type") in
-      let instance_id_opt = fpo "instanceId" in
-
-      let launch_specification_x = find_kids_else_error kids "launchSpecification" in
-      let fpo = find_p_kid launch_specification_x in
-      let image_id_opt = fpo "imageId" in
-      let key_name_opt = fpo "keyName" in
-      let groups_x = find_kids_else_error launch_specification_x "groupSet" in
-      let groups = List.map group_of_xml groups_x in
-      let placement_x_opt = find_kids launch_specification_x "placement" in
-      let placement_availability_zone_opt, placement_group_opt =
-        match placement_x_opt with
-          | None -> None, None
-          | Some placement_x ->
-              let availability_zone, placement_group_opt = placement_of_xml placement_x in
-              Some availability_zone, placement_group_opt
-      in
-
-      (object 
-         method id = sir_id
-         method spot_price = spot_price
-         method state = state
-         method sir_type = sir_type
-         method instance_id_opt = instance_id_opt
-         method image_id_opt = image_id_opt
-         method key_name_opt = key_name_opt
-         method groups = groups
-         method placement_group_opt = placement_group_opt
-       end)
-  | _ ->
+    
+let spot_instance_request_of_xml xml =
+  try
+    let kids = get (X.find_node [xml] "item") in
+    let fp = fun x -> match X.find_property kids x with Some x -> x | None -> raise (Error x) in
+    let fpo = X.find_property kids in
+    
+    let sir_id = fp "spotInstanceRequestId" in
+    let spot_price = float_of_string (fp "spotPrice") in
+    let state = spot_instance_request_state_of_string (fp "state") in
+    let sir_type = spot_instance_request_type_of_string (fp "type") in
+    let instance_id_opt = fpo "instanceId" in
+    
+    let launch_specification_x = get (X.find_node kids "launchSpecification") in
+    let fpo = X.find_property launch_specification_x in
+    let image_id_opt = fpo "imageId" in
+    let key_name_opt = fpo "keyName" in
+    let groups_x = get (X.find_node launch_specification_x "groupSet") in
+    let groups = List.map group_of_xml groups_x in
+    let placement_x_opt = X.find_node launch_specification_x "placement" in
+    let placement_availability_zone_opt, placement_group_opt =
+      match placement_x_opt with
+      | None -> None, None
+      | Some placement_x ->
+        let availability_zone, placement_group_opt = placement_of_xml placement_x in
+        Some availability_zone, placement_group_opt
+    in
+    
+    (object 
+      method id = sir_id
+      method spot_price = spot_price
+      method state = state
+      method sir_type = sir_type
+      method instance_id_opt = instance_id_opt
+      method image_id_opt = image_id_opt
+      method key_name_opt = key_name_opt
+      method groups = groups
+      method placement_group_opt = placement_group_opt
+     end)
+  with Not_found ->
       raise (Error "RequestSpotInstancesResponse.spotInstanceRequestSet.item")
     
-let request_spot_instances_of_xml = function
-  | X.E ("RequestSpotInstancesResponse",_,[ _; X.E("spotInstanceRequestSet",_,items) ]) -> 
-      List.map spot_instance_request_of_xml items
-  | _ ->
-      raise (Error ("RequestSpotInstancesResponse"))
+let request_spot_instances_of_xml xml =
+  match X.find_node [xml] "RequestSpotInstancesResponse/spotInstanceRequestSet" with
+  | Some items -> List.map spot_instance_request_of_xml items
+  | None -> raise (Error ("RequestSpotInstancesResponse"))
 
 let request_spot_instances ?region creds spot_instance_request = 
   let args = spot_instance_request_args spot_instance_request in
@@ -729,15 +657,10 @@ let request_spot_instances ?region creds spot_instance_request =
       return (error_msg body)
   
 (* describe spot instance requests *)
-let describe_spot_instance_requests_of_xml = function 
-  | X.E("DescribeSpotInstanceRequestsResponse",_,[
-    _;
-    X.E("spotInstanceRequestSet",_,items)
-  ]) -> 
-    List.map spot_instance_request_of_xml items
-
-  | _ ->
-    raise (Error "DescribeSpotInstanceRequestsResponse")
+let describe_spot_instance_requests_of_xml xml = 
+  match X.find_node [xml] "DescribeSpotInstanceRequestsResponse/spotInstanceRequestSet" with
+  | Some items -> List.map spot_instance_request_of_xml items
+  | None -> raise (Error "DescribeSpotInstanceRequestsResponse")
 
 let sir_args_of_ids sir_ids = 
   Util.list_map_i (
@@ -758,20 +681,18 @@ let describe_spot_instance_requests ?region creds sir_ids =
       return (error_msg body)
 
 (* cancel spot instance requests *)
-let item_of_xml = function
-  | X.E("item",_,[
-    X.E("spotInstanceRequestId",_,[X.P sir_id]); 
-    X.E("state",_,[X.P state_s])
-  ]) ->
-    sir_id, spot_instance_request_state_of_string state_s
-  | _ -> raise (Error ("CancelSpotInstanceRequestsResponse.item"))
+let item_of_xml xml =
+    try
+      let sir_id = get (X.find_property [xml] "item/spotInstanceRequestId") in
+      let state_s = get (X.find_property [xml] "item/state") in
+      sir_id, spot_instance_request_state_of_string state_s
+    with 
+    | Not_found -> raise (Error "CancelSpotInstanceRequestsResponse.item")
 
-let cancel_spot_instance_requests_of_xml = function
-  | X.E("CancelSpotInstanceRequestsResponse",_,[
-    _; X.E("spotInstanceRequestSet",_,items_x)
-  ])-> 
-    List.map item_of_xml items_x
-  | _ -> raise (Error "CancelSpotInstanceRequestsResponse")
+let cancel_spot_instance_requests_of_xml xml =
+  match X.find_node [xml] "CancelSpotInstanceRequestsResponse/spotInstanceRequestSet" with
+  | Some items ->  List.map item_of_xml items
+  | None ->raise (Error "CancelSpotInstanceRequestsResponse")
 
 let cancel_spot_instance_requests ?region creds sir_ids =
   let sir_ids_args = sir_args_of_ids sir_ids in
