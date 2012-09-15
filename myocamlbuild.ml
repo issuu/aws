@@ -1,5 +1,5 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: 76c9c48f3bb7b8b1d6f2396b0356de27) *)
+(* DO NOT EDIT (digest: 38e5fbc483405a11c2e11acbc315d4e6) *)
 module OASISGettext = struct
 # 21 "/home/afu/.opam/system/build/oasis.0.3.0/src/oasis/OASISGettext.ml"
 
@@ -504,19 +504,7 @@ let package_default =
           (["oasis_library_aws_cohttp_byte"; "ocaml"; "compile"; "byte"],
             [(OASISExpr.EBool true, S [A "-annot"])]);
           (["oasis_library_aws_cohttp_native"; "ocaml"; "compile"; "native"],
-            [(OASISExpr.EBool true, S [A "-annot"])]);
-          (["oasis_executable_backup_byte"; "ocaml"; "link"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_backup_native"; "ocaml"; "link"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_backup_byte"; "ocaml"; "ocamldep"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_backup_native"; "ocaml"; "ocamldep"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_backup_byte"; "ocaml"; "compile"; "byte"],
-            [(OASISExpr.EBool true, S [A "-thread"])]);
-          (["oasis_executable_backup_native"; "ocaml"; "compile"; "native"],
-            [(OASISExpr.EBool true, S [A "-thread"])])
+            [(OASISExpr.EBool true, S [A "-annot"])])
        ];
      includes = [];
      }
@@ -524,6 +512,6 @@ let package_default =
 
 let dispatch_default = MyOCamlbuildBase.dispatch_default package_default;;
 
-# 528 "myocamlbuild.ml"
+# 516 "myocamlbuild.ml"
 (* OASIS_STOP *)
 Ocamlbuild_plugin.dispatch dispatch_default;;
